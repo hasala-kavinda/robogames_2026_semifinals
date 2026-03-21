@@ -55,10 +55,14 @@ class Camera:
             return None
         width, height = struct.unpack("=HH", header_data)
 
-        img_data = self._recv_all(s, width * height * 3)
+        # 2. Read exactly width * height bytes (Grayscale)
+        bytes_to_read = width * height
+        img_data = self._recv_all(s, bytes_to_read)
         if not img_data:
             return None
-        frame = np.frombuffer(img_data, dtype=np.uint8).reshape((height, width, 3))
+
+        # 3. Reshape into 2D Grayscale array
+        frame = np.frombuffer(img_data, dtype=np.uint8).reshape((height, width))
         return frame
 
     def is_running(self):
