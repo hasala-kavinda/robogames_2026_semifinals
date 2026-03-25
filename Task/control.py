@@ -20,8 +20,7 @@ class Control:
         system_id = self.master.target_system
         component_id = self.master.target_component
         print(
-            "Connected to MAVLink! "
-            f"System ID: {system_id}, Component: {component_id}"
+            f"Connected to MAVLink! System ID: {system_id}, Component: {component_id}"
         )
 
     def set_mode(self, mode):
@@ -165,10 +164,7 @@ class Control:
         current_yaw = self.get_current_yaw()
         target_yaw = (current_yaw + degrees) % 360
 
-        print(
-            f"Turning {degrees}° "
-            f"(from {current_yaw:.1f}° to {target_yaw:.1f}°)"
-        )
+        print(f"Turning {degrees}° (from {current_yaw:.1f}° to {target_yaw:.1f}°)")
 
         # Use MAV_CMD_CONDITION_YAW command for precise yaw control
         # This is the most reliable method for ArduPilot
@@ -242,7 +238,7 @@ class Control:
             self.master.target_system,
             self.master.target_component,
             mavutil.mavlink.MAV_FRAME_BODY_NED,  # Frame of reference
-            0b0000111111000111,  # Ignore positions/accelerations, use velocity+yaw
+            0b0000011111000111,  # Ignore positions/accelerations, use velocity+yaw
             0,
             0,
             0,

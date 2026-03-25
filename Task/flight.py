@@ -21,7 +21,7 @@ from vision import (
 # Requested-country configuration.
 # If only one country is needed, set country2 to 0.
 country1 = 1
-country2 = 0
+country2 = 2
 Airports = [country1, country2]
 
 
@@ -55,11 +55,11 @@ class Brain:
         self.mission_timeout_s = 240.0
 
         # PD tuning and command shaping for curved line following.
-        self.kp = 1.5
-        self.kd = 0.8
+        self.kp = 1.1
+        self.kd = 0.4
         self.prev_error = 0.0
         self.filtered_error = 0.0
-        self.target_speed = 0.5
+        self.target_speed = 0.3
         self.search_yaw_rate = 0.35
 
         # Requested-country order. Zero is ignored by definition.
@@ -205,9 +205,10 @@ class Brain:
             # If the line is temporarily lost, gently rotate to reacquire it.
             self.control.set_velocity_body(0.0, 0.0, 0.0, self.search_yaw_rate)
 
-    def process_frame(self, frame_rgb: np.ndarray):
+    def process_frame(self, frame_raw: np.ndarray):
         """Camera callback: run detectors and update mission knowledge."""
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        # frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        frame_bgr = frame_raw.copy()
 
         line_result = self.line_detector.detect(frame_bgr)
         tags = self.tag_detector.detect(frame_bgr)
@@ -223,11 +224,7 @@ class Brain:
                 tags,
                 self._current_target_country(),
                 self.state.value,
-                (
-                    self._mission_elapsed()
-                    if self.mission_start_time > 0
-                    else 0.0
-                ),
+                (self._mission_elapsed() if self.mission_start_time > 0 else 0.0),
             )
 
     def _land_wait_takeoff_cycle(
@@ -317,10 +314,7 @@ class Brain:
         if not self._should_land_here(tag):
             return True
 
-        print(
-            f"Landing at airport tag {tag.tag_id} "
-            f"for country {tag.country_code}."
-        )
+        print(f"Landing at airport tag {tag.tag_id} for country {tag.country_code}.")
         if self._land_wait_takeoff_cycle(tag):
             return True
 

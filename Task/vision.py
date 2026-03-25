@@ -106,9 +106,7 @@ class AprilTagDetector:
     """Detect AprilTags and decode airport metadata from tag ID digits."""
 
     def __init__(self):
-        dictionary = cv2.aruco.getPredefinedDictionary(
-            cv2.aruco.DICT_APRILTAG_36h11
-        )
+        dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
         parameters = cv2.aruco.DetectorParameters()
         if hasattr(cv2.aruco, "ArucoDetector"):
             self.detector = cv2.aruco.ArucoDetector(dictionary, parameters)
@@ -118,9 +116,7 @@ class AprilTagDetector:
             self.parameters = parameters
             detect_markers = getattr(cv2.aruco, "detectMarkers", None)
             if detect_markers is None:
-                raise RuntimeError(
-                    "OpenCV aruco.detectMarkers API is unavailable"
-                )
+                raise RuntimeError("OpenCV aruco.detectMarkers API is unavailable")
             self.detect_markers = detect_markers
 
     def detect(self, frame_bgr: np.ndarray) -> List[TagDetectionResult]:
@@ -222,10 +218,7 @@ def draw_debug_overlays(
             cv2.LINE_AA,
         )
 
-    header = (
-        f"State:{state_name} "
-        f"TargetCountry:{target_country} T:{elapsed_s:.1f}s"
-    )
+    header = f"State:{state_name} TargetCountry:{target_country} T:{elapsed_s:.1f}s"
     cv2.putText(
         out,
         header,
