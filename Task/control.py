@@ -9,7 +9,7 @@ import math
 
 class Control:
     altitude_tolerance = 0.02  # meters
-    arm_timout = 3
+    arm_timout = 1
 
     def __init__(self, max_altitude=3.0):
         # Setup MAVLink connection

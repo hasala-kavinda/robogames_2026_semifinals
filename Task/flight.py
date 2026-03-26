@@ -12,6 +12,7 @@ from sensor import Camera
 from vision import (
     AprilTagDetector,
     LineDetectionResult,
+    ServoingResult,
     TagDetectionResult,
     YellowLineDetector,
     draw_debug_overlays,
@@ -28,6 +29,7 @@ Airports = [country1, country2]
 class MissionState(Enum):
     INIT = "INIT"
     FOLLOW_LINE = "FOLLOW_LINE"
+    VISUAL_SERVO = "VISUAL_SERVO"
     LAND_WAIT = "LAND_WAIT"
     RETAKEOFF = "RETAKEOFF"
     COMPLETE = "COMPLETE"
@@ -55,11 +57,11 @@ class Brain:
         self.mission_timeout_s = 240.0
 
         # PD tuning and command shaping for curved line following.
-        self.kp = 1.1
-        self.kd = 0.4
+        self.kp = 1.3
+        self.kd = 0.2
         self.prev_error = 0.0
         self.filtered_error = 0.0
-        self.target_speed = 0.3
+        self.target_speed = 0.25
         self.search_yaw_rate = 0.35
 
         # Requested-country order. Zero is ignored by definition.
@@ -77,6 +79,20 @@ class Brain:
         self.landed_airports: Set[int] = set()
         self.last_land_attempt_time: Dict[int, float] = {}
         self.land_retry_cooldown_s = 8.0
+
+        # Visual servo controller state (precision landing on AprilTag).
+        self.servo_start_time: float = 0.0
+        self.servo_kp: float = 0.3  # Proportional gain for velocity control
+        self.servo_kd: float = 0.2  # Derivative damping
+        self.servo_tolerance_px: int = 40  # Convergence threshold (pixels)
+        self.servo_timeout_s: float = 12  # Max servo duration
+        self.max_servo_velocity: float = 0.1  # Velocity command ceiling (m/s)
+        self.servo_prev_error_x: float = 0.0
+        self.servo_prev_error_y: float = 0.0
+        self.servo_target_tag: Optional[TagDetectionResult] = None
+
+        # Thread-shared servo result state
+        self.latest_servo_result: Optional[ServoingResult] = None
 
     def _current_target_country(self) -> Optional[int]:
         if self.target_index >= len(self.target_countries):
@@ -205,18 +221,131 @@ class Brain:
             # If the line is temporarily lost, gently rotate to reacquire it.
             self.control.set_velocity_body(0.0, 0.0, 0.0, self.search_yaw_rate)
 
+    def _servo_to_tag(self) -> Tuple[bool, bool]:
+        """
+        Run visual servoing control loop to center tag in frame.
+
+        Returns:
+            (converged, timeout_reached) booleans
+        """
+        if self.servo_target_tag is None:
+            return False, False
+
+        # Snapshot latest perception (thread-safe)
+        with self._lock:
+            servo_result = self.latest_servo_result
+
+        if servo_result is None or not servo_result.visible:
+            # Tag lost mid-servo; apply timeout penalty
+            self.control.set_velocity_body(0.0, 0.0, 0.0, 0.0)
+            print("Warning: Tag lost during visual servo.")
+            return False, False
+
+        # Check convergence: both X and Y errors within tolerance
+        converged = (
+            abs(servo_result.pixel_error[0]) <= self.servo_tolerance_px
+            and abs(servo_result.pixel_error[1]) <= self.servo_tolerance_px
+        )
+
+        # Check timeout
+        elapsed = time.time() - self.servo_start_time
+        timeout_reached = elapsed >= self.servo_timeout_s
+
+        if converged:
+            print(
+                f"Visual servo converged! Error: ({servo_result.pixel_error[0]}, "
+                f"{servo_result.pixel_error[1]}) px"
+            )
+            self.control.set_velocity_body(0.0, 0.0, 0.0, 0.0)
+            return True, False
+
+        if timeout_reached:
+            print(
+                f"Visual servo timeout. Final error: ({servo_result.pixel_error[0]}, "
+                f"{servo_result.pixel_error[1]}) px. Attempting land anyway."
+            )
+            self.control.set_velocity_body(0.0, 0.0, 0.0, 0.0)
+            return False, True
+
+        ## --- CORRECTED PD CONTROL LAW ---
+        # 1. Calculate derivatives
+        derivative_x = servo_result.error_x - self.servo_prev_error_x
+        derivative_y = servo_result.error_y - self.servo_prev_error_y
+
+        # 2. Map Camera Axes to Drone Body Axes!
+        # Camera X (Left/Right) controls Drone Y (Right/Left velocity)
+        # If tag is Right (error_x > 0), drone must move Right (vy > 0)
+        vy = (self.servo_kp * servo_result.error_x) + (self.servo_kd * derivative_x)
+
+        # Camera Y (Top/Bottom) controls Drone X (Forward/Backward velocity)
+        # If tag is at the Bottom (error_y > 0), it is behind the drone,
+        # so the drone must move Backward (vx < 0)
+        vx = -(self.servo_kp * servo_result.error_y) - (self.servo_kd * derivative_y)
+
+        # Clamp to max servo velocity
+        vel_mag = np.sqrt(vx**2 + vy**2)
+        if vel_mag > self.max_servo_velocity:
+            scale = self.max_servo_velocity / vel_mag
+            vx *= scale
+            vy *= scale
+
+        # Update derivative tracking
+        self.servo_prev_error_x = servo_result.error_x
+        self.servo_prev_error_y = servo_result.error_y
+
+        # Send velocity command (vz=0 for altitude hold)
+        self.control.set_velocity_body(vx, vy, 0.0, 0.0)
+
+        return False, False
+
     def process_frame(self, frame_raw: np.ndarray):
         """Camera callback: run detectors and update mission knowledge."""
         # frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         frame_bgr = frame_raw.copy()
 
         line_result = self.line_detector.detect(frame_bgr)
+
         tags = self.tag_detector.detect(frame_bgr)
 
         with self._lock:
             self.latest_line = line_result
             self.latest_tags = tags
             self._update_airport_knowledge(tags)
+
+            # Calculate servo result if in VISUAL_SERVO state
+            servo_result = None
+            if (
+                self.state == MissionState.VISUAL_SERVO
+                and self.servo_target_tag is not None
+            ):
+                # Reacquire the current frame's instance of the target tag
+                current_tag = next(
+                    (t for t in tags if t.tag_id == self.servo_target_tag.tag_id),
+                    None,
+                )
+
+                if current_tag is not None:
+                    servo_result = self.tag_detector.calculate_servoing_error(
+                        current_tag,
+                        frame_bgr.shape,
+                    )
+                else:
+                    servo_result = None
+
+                # Update latest servoing result for main loop access
+                self.latest_servo_result = servo_result
+            else:
+                self.latest_servo_result = None
+
+            # Decide which precision overlay to show
+            servo_display_result = (
+                servo_result if self.state == MissionState.VISUAL_SERVO else None
+            )
+            servo_timeout_display = (
+                self.servo_timeout_s
+                if self.state == MissionState.VISUAL_SERVO
+                else None
+            )
 
             self.debug_frame = draw_debug_overlays(
                 frame_bgr,
@@ -225,6 +354,8 @@ class Brain:
                 self._current_target_country(),
                 self.state.value,
                 (self._mission_elapsed() if self.mission_start_time > 0 else 0.0),
+                servo_result=servo_display_result,
+                servo_timeout_s=servo_timeout_display,
             )
 
     def _land_wait_takeoff_cycle(
@@ -314,13 +445,18 @@ class Brain:
         if not self._should_land_here(tag):
             return True
 
-        print(f"Landing at airport tag {tag.tag_id} for country {tag.country_code}.")
-        if self._land_wait_takeoff_cycle(tag):
-            return True
+        # Transition to visual servo state for precision landing
+        print(
+            f"Valid landing target detected: tag {tag.tag_id} "
+            f"(country {tag.country_code}). Entering visual servo mode."
+        )
+        self.state = MissionState.VISUAL_SERVO
+        self.servo_target_tag = tag
+        self.servo_start_time = time.time()
+        self.servo_prev_error_x = 0.0
+        self.servo_prev_error_y = 0.0
 
-        print("Landing cycle failed. Triggering failsafe.")
-        self._failsafe_land()
-        return False
+        return True
 
     def _log_planned_path(self):
         """Run BFS/DFS planning on the discovered graph for current target."""
@@ -364,11 +500,37 @@ class Brain:
                 print("Mission complete: landed on all requested airports.")
                 break
 
-            self._apply_line_following(line)
-            self._log_planned_path()
+            # Handle visual servo state (precision landing)
+            if self.state == MissionState.VISUAL_SERVO:
+                if self.servo_target_tag is not None:
+                    converged, timeout_reached = self._servo_to_tag()
 
-            if not self._handle_detected_tags(tags, frame):
-                break
+                    if converged or timeout_reached:
+                        # Transition to landing
+                        print(
+                            f"Transitioning from VISUAL_SERVO to LAND_WAIT. "
+                            f"Converged={converged}, Timeout={timeout_reached}"
+                        )
+                        tag = self.servo_target_tag
+                        self.servo_target_tag = None
+
+                        if not self._land_wait_takeoff_cycle(tag):
+                            print("Landing cycle failed. Triggering failsafe.")
+                            self._failsafe_land()
+                            break
+                else:
+                    print("ERROR: VISUAL_SERVO state but no target tag set.")
+                    self._failsafe_land()
+                    break
+            # Normal line following state
+            elif self.state == MissionState.FOLLOW_LINE:
+                self._apply_line_following(line)
+
+                # Only run tag handling/planning while line-following
+                self._log_planned_path()
+
+                if not self._handle_detected_tags(tags, frame):
+                    break
 
             time.sleep(0.05)
 
