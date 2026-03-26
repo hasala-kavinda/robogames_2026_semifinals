@@ -72,6 +72,14 @@ class Brain:
         self.airport_graph: Dict[int, Set[int]] = {}
         self.last_seen_airport: Optional[int] = None
         self.last_landed_airport: Optional[int] = None
+        self.graph_revision = 0
+
+        # Active route state produced by BFS/DFS planning.
+        self.active_planned_path: List[int] = []
+        self.expected_next_airport: Optional[int] = None
+        self.route_country: Optional[int] = None
+        self.route_start_airport: Optional[int] = None
+        self.route_graph_revision = -1
 
         # Completion and de-duplication tracking.
         self.completed_countries: Set[int] = set()
@@ -102,8 +110,19 @@ class Brain:
         return self._mission_elapsed() >= self.mission_timeout_s
 
     def _record_edge(self, a: int, b: int):
-        self.airport_graph.setdefault(a, set()).add(b)
-        self.airport_graph.setdefault(b, set()).add(a)
+        neighbors_a = self.airport_graph.setdefault(a, set())
+        neighbors_b = self.airport_graph.setdefault(b, set())
+
+        changed = False
+        if b not in neighbors_a:
+            neighbors_a.add(b)
+            changed = True
+        if a not in neighbors_b:
+            neighbors_b.add(a)
+            changed = True
+
+        if changed:
+            self.graph_revision += 1
 
     def _update_airport_knowledge(self, tags: List[TagDetectionResult]):
         """Update airport nodes and infer edges from sequential detections."""
@@ -111,8 +130,11 @@ class Brain:
             return
 
         primary = tags[0]
+        if primary.tag_id not in self.airport_graph:
+            self.airport_graph[primary.tag_id] = set()
+            self.graph_revision += 1
+
         self.airport_info[primary.tag_id] = primary
-        self.airport_graph.setdefault(primary.tag_id, set())
 
         if (
             self.last_seen_airport is not None
@@ -181,10 +203,91 @@ class Brain:
         # Prefer BFS for shortest known path, then DFS fallback if needed.
         return self._bfs_path(start, goals) or self._dfs_path(start, goals)
 
+    def _route_start_airport(self) -> Optional[int]:
+        return self.last_landed_airport or self.last_seen_airport
+
+    def _derive_expected_next_airport(
+        self,
+        path: List[int],
+        start_airport: Optional[int],
+    ) -> Optional[int]:
+        if not path:
+            return None
+        if start_airport is None:
+            return path[0]
+
+        if path[0] == start_airport:
+            return path[1] if len(path) > 1 else path[0]
+
+        if start_airport in path:
+            idx = path.index(start_airport)
+            return path[idx + 1] if idx + 1 < len(path) else path[idx]
+
+        return path[0]
+
+    def _clear_active_route(self):
+        self.active_planned_path = []
+        self.expected_next_airport = None
+
+    def _refresh_route_plan(self, force: bool = False):
+        target_country = self._current_target_country()
+        start_airport = self._route_start_airport()
+
+        if target_country is None:
+            self._clear_active_route()
+            self.route_country = None
+            self.route_start_airport = None
+            self.route_graph_revision = self.graph_revision
+            return
+
+        if start_airport is None:
+            self._clear_active_route()
+            self.route_country = target_country
+            self.route_start_airport = None
+            self.route_graph_revision = self.graph_revision
+            return
+
+        should_recompute = (
+            force
+            or self.route_country != target_country
+            or self.route_start_airport != start_airport
+            or self.route_graph_revision != self.graph_revision
+        )
+        if not should_recompute:
+            return
+
+        planned_path = self._find_candidate_path(target_country)
+        if planned_path:
+            self.active_planned_path = planned_path
+            self.expected_next_airport = self._derive_expected_next_airport(
+                planned_path,
+                start_airport,
+            )
+            print(
+                f"Route plan country {target_country}: {planned_path}, "
+                f"next={self.expected_next_airport}"
+            )
+        else:
+            self._clear_active_route()
+            print(
+                f"No known route yet for country {target_country} "
+                f"from airport {start_airport}."
+            )
+
+        self.route_country = target_country
+        self.route_start_airport = start_airport
+        self.route_graph_revision = self.graph_revision
+
     def _should_land_here(self, tag: TagDetectionResult) -> bool:
         """Validate airport safety and country constraints before landing."""
         target_country = self._current_target_country()
         if target_country is None:
+            return False
+
+        if (
+            self.expected_next_airport is not None
+            and tag.tag_id != self.expected_next_airport
+        ):
             return False
 
         if tag.airport_status != 1:
@@ -280,6 +383,8 @@ class Brain:
         if self._current_target_country() == landing_tag.country_code:
             self.target_index += 1
 
+        self._refresh_route_plan(force=True)
+
         if self._current_target_country() is None:
             self.state = MissionState.COMPLETE
             return True
@@ -325,31 +430,60 @@ class Brain:
         """Choose the tag nearest to image center as current airport candidate."""
         _, width = frame.shape[:2] if frame is not None else (0, 0)
         center_x = width / 2 if width > 0 else 0
-        return min(tags, key=lambda t, cx=center_x: abs(t.center[0] - cx))
+
+        def _center_distance(tag: TagDetectionResult) -> float:
+            return abs(tag.center[0] - center_x)
+
+        return min(tags, key=_center_distance)
 
     def _handle_detected_tags(
         self,
         tags: List[TagDetectionResult],
         frame: Optional[np.ndarray],
-    ) -> bool:
-        """Handle tag-driven decisions. Returns False when mission should stop."""
+    ):
+        """Handle tag-driven decisions while line following continues."""
         if not tags:
-            return True
+            return
 
-        tag = self._select_primary_tag(tags, frame)
+        self._refresh_route_plan()
+
+        tag: Optional[TagDetectionResult] = None
+        if self.expected_next_airport is not None:
+            tag = next(
+                (t for t in tags if t.tag_id == self.expected_next_airport),
+                None,
+            )
+            if tag is None:
+                # Planned next airport is not visible yet; keep exploring forward.
+                return
+
+        if tag is None:
+            tag = self._select_primary_tag(tags, frame)
         if tag.airport_status == 0:
             print(f"Skipping unsafe airport tag {tag.tag_id}.")
-            return True
+            return
+
+        target_country = self._current_target_country()
+        if target_country is not None and tag.country_code != target_country:
+            print(
+                f"Skipping tag {tag.tag_id}: country {tag.country_code} "
+                f"!= target {target_country}."
+            )
+            return
 
         if not self._should_land_here(tag):
-            return True
+            if self.expected_next_airport is not None:
+                print(
+                    f"Ignoring tag {tag.tag_id}; expected next airport "
+                    f"is {self.expected_next_airport}."
+                )
+            return
 
         print(f"Targeting airport tag {tag.tag_id} for country {tag.country_code}.")
         self.servo_target_tag = tag
         self.servo_start_time = time.time()
         self.prev_servo_error = (0.0, 0.0)
         self.state = MissionState.VISUAL_SERVO
-        return True
 
     def _servo_to_tag(self) -> Tuple[bool, bool]:
         """
@@ -365,9 +499,27 @@ class Brain:
             self.control.set_velocity_body(0.0, 0.0, 0.0, 0.0)
             return False, False
 
-        error_x = float(servo_result["error_x"])
-        error_y = float(servo_result["error_y"])
-        pixel_dx, pixel_dy = servo_result.get("pixel_error", (0.0, 0.0))
+        raw_error_x = servo_result.get("error_x", 0.0)
+        raw_error_y = servo_result.get("error_y", 0.0)
+        if not isinstance(raw_error_x, (int, float)):
+            raw_error_x = 0.0
+        if not isinstance(raw_error_y, (int, float)):
+            raw_error_y = 0.0
+
+        error_x = float(raw_error_x)
+        error_y = float(raw_error_y)
+
+        pixel_error_raw = servo_result.get("pixel_error", (0.0, 0.0))
+        if (
+            isinstance(pixel_error_raw, tuple)
+            and len(pixel_error_raw) == 2
+            and isinstance(pixel_error_raw[0], (int, float))
+            and isinstance(pixel_error_raw[1], (int, float))
+        ):
+            pixel_dx = float(pixel_error_raw[0])
+            pixel_dy = float(pixel_error_raw[1])
+        else:
+            pixel_dx, pixel_dy = 0.0, 0.0
 
         deriv_x = error_x - self.prev_servo_error[0]
         deriv_y = error_y - self.prev_servo_error[1]
@@ -402,14 +554,8 @@ class Brain:
         return converged, timed_out
 
     def _log_planned_path(self):
-        """Run BFS/DFS planning on the discovered graph for current target."""
-        target_country = self._current_target_country()
-        if target_country is None:
-            return
-
-        planned_path = self._find_candidate_path(target_country)
-        if planned_path is not None:
-            print(f"Planned path to country {target_country}: {planned_path}")
+        """Compatibility wrapper: keep route plan refreshed during mission."""
+        self._refresh_route_plan()
 
     def start(self):
         """Run until all requested countries are serviced or timeout occurs."""
@@ -445,10 +591,8 @@ class Brain:
 
             if self.state == MissionState.FOLLOW_LINE:
                 self._apply_line_following(line)
-                self._log_planned_path()
-
-                if not self._handle_detected_tags(tags, frame):
-                    break
+                self._refresh_route_plan()
+                self._handle_detected_tags(tags, frame)
 
             elif self.state == MissionState.VISUAL_SERVO:
                 converged, timed_out = self._servo_to_tag()
