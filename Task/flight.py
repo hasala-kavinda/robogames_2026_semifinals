@@ -80,6 +80,7 @@ class Brain:
         self.route_country: Optional[int] = None
         self.route_start_airport: Optional[int] = None
         self.route_graph_revision = -1
+        self.last_skip_log_key: Optional[Tuple[str, int]] = None
 
         # Completion and de-duplication tracking.
         self.completed_countries: Set[int] = set()
@@ -204,7 +205,20 @@ class Brain:
         return self._bfs_path(start, goals) or self._dfs_path(start, goals)
 
     def _route_start_airport(self) -> Optional[int]:
-        return self.last_landed_airport or self.last_seen_airport
+        # While traversing, prefer the airport currently observed on the line.
+        return self.last_seen_airport or self.last_landed_airport
+
+    def _log_skip_once(self, reason: str, tag: TagDetectionResult, detail: str):
+        key = (reason, tag.tag_id)
+        if self.last_skip_log_key == key:
+            return
+        print(detail)
+        self.last_skip_log_key = key
+
+    def _advance_route_through_transit(self, transit_tag: TagDetectionResult):
+        """Treat an invalid expected node as transit and continue planning."""
+        self.last_seen_airport = transit_tag.tag_id
+        self._refresh_route_plan(force=True)
 
     def _derive_expected_next_airport(
         self,
@@ -459,27 +473,72 @@ class Brain:
 
         if tag is None:
             tag = self._select_primary_tag(tags, frame)
+
         if tag.airport_status == 0:
-            print(f"Skipping unsafe airport tag {tag.tag_id}.")
+            if (
+                self.expected_next_airport is not None
+                and tag.tag_id == self.expected_next_airport
+            ):
+                self._log_skip_once(
+                    "transit-unsafe",
+                    tag,
+                    (
+                        f"Transit via unsafe airport tag {tag.tag_id}; "
+                        "replanning route forward."
+                    ),
+                )
+                self._advance_route_through_transit(tag)
+                return
+
+            self._log_skip_once(
+                "unsafe",
+                tag,
+                f"Skipping unsafe airport tag {tag.tag_id}.",
+            )
             return
 
         target_country = self._current_target_country()
         if target_country is not None and tag.country_code != target_country:
-            print(
-                f"Skipping tag {tag.tag_id}: country {tag.country_code} "
-                f"!= target {target_country}."
+            if (
+                self.expected_next_airport is not None
+                and tag.tag_id == self.expected_next_airport
+            ):
+                self._log_skip_once(
+                    "transit-country",
+                    tag,
+                    (
+                        f"Transit via tag {tag.tag_id} country "
+                        f"{tag.country_code}; replanning to target "
+                        f"country {target_country}."
+                    ),
+                )
+                self._advance_route_through_transit(tag)
+                return
+
+            self._log_skip_once(
+                "country-mismatch",
+                tag,
+                (
+                    f"Skipping tag {tag.tag_id}: country "
+                    f"{tag.country_code} != target {target_country}."
+                ),
             )
             return
 
         if not self._should_land_here(tag):
             if self.expected_next_airport is not None:
-                print(
-                    f"Ignoring tag {tag.tag_id}; expected next airport "
-                    f"is {self.expected_next_airport}."
+                self._log_skip_once(
+                    "not-expected",
+                    tag,
+                    (
+                        f"Ignoring tag {tag.tag_id}; expected next airport "
+                        f"is {self.expected_next_airport}."
+                    ),
                 )
             return
 
         print(f"Targeting airport tag {tag.tag_id} for country {tag.country_code}.")
+        self.last_skip_log_key = None
         self.servo_target_tag = tag
         self.servo_start_time = time.time()
         self.prev_servo_error = (0.0, 0.0)
