@@ -28,6 +28,7 @@ Airports = [country1, country2]
 class MissionState(Enum):
     INIT = "INIT"
     FOLLOW_LINE = "FOLLOW_LINE"
+    VISUAL_SERVO = "VISUAL_SERVO"
     LAND_WAIT = "LAND_WAIT"
     RETAKEOFF = "RETAKEOFF"
     COMPLETE = "COMPLETE"
@@ -77,6 +78,17 @@ class Brain:
         self.landed_airports: Set[int] = set()
         self.last_land_attempt_time: Dict[int, float] = {}
         self.land_retry_cooldown_s = 8.0
+
+        # Visual servoing tuning and state.
+        self.servo_kp = 0.3
+        self.servo_kd = 0.2
+        self.servo_tolerance_px = 60
+        self.servo_timeout_s = 300.0
+        self.max_servo_velocity = 0.1
+        self.servo_start_time = 0.0
+        self.servo_target_tag: Optional[TagDetectionResult] = None
+        self.prev_servo_error: Tuple[float, float] = (0.0, 0.0)
+        self.servo_result: Optional[Dict[str, object]] = None
 
     def _current_target_country(self) -> Optional[int]:
         if self.target_index >= len(self.target_countries):
@@ -207,15 +219,33 @@ class Brain:
 
     def process_frame(self, frame_raw: np.ndarray):
         """Camera callback: run detectors and update mission knowledge."""
-        # frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         frame_bgr = frame_raw.copy()
 
         line_result = self.line_detector.detect(frame_bgr)
         tags = self.tag_detector.detect(frame_bgr)
 
+        servo_result: Optional[Dict[str, object]] = None
+        if self.state == MissionState.VISUAL_SERVO and self.servo_target_tag:
+            # Find the fresh detection of the current target tag in this frame.
+            matching = next(
+                (t for t in tags if t.tag_id == self.servo_target_tag.tag_id),
+                None,
+            )
+            if matching is not None:
+                h, w = frame_bgr.shape[:2]
+                dx_px = matching.center[0] - (w / 2.0)
+                dy_px = matching.center[1] - (h / 2.0)
+                servo_result = {
+                    "visible": True,
+                    "error_x": dx_px / (w / 2.0),
+                    "error_y": dy_px / (h / 2.0),
+                    "pixel_error": (dx_px, dy_px),
+                }
+
         with self._lock:
             self.latest_line = line_result
             self.latest_tags = tags
+            self.servo_result = servo_result
             self._update_airport_knowledge(tags)
 
             self.debug_frame = draw_debug_overlays(
@@ -314,13 +344,62 @@ class Brain:
         if not self._should_land_here(tag):
             return True
 
-        print(f"Landing at airport tag {tag.tag_id} for country {tag.country_code}.")
-        if self._land_wait_takeoff_cycle(tag):
-            return True
+        print(f"Targeting airport tag {tag.tag_id} for country {tag.country_code}.")
+        self.servo_target_tag = tag
+        self.servo_start_time = time.time()
+        self.prev_servo_error = (0.0, 0.0)
+        self.state = MissionState.VISUAL_SERVO
+        return True
 
-        print("Landing cycle failed. Triggering failsafe.")
-        self._failsafe_land()
-        return False
+    def _servo_to_tag(self) -> Tuple[bool, bool]:
+        """
+        Drive body-frame velocities to center the target tag.
+
+        Returns (converged, timed_out).
+        """
+        with self._lock:
+            servo_result = self.servo_result
+
+        if servo_result is None or not servo_result.get("visible", False):
+            # Hold position when the tag is temporarily lost to avoid drift.
+            self.control.set_velocity_body(0.0, 0.0, 0.0, 0.0)
+            return False, False
+
+        error_x = float(servo_result["error_x"])
+        error_y = float(servo_result["error_y"])
+        pixel_dx, pixel_dy = servo_result.get("pixel_error", (0.0, 0.0))
+
+        deriv_x = error_x - self.prev_servo_error[0]
+        deriv_y = error_y - self.prev_servo_error[1]
+
+        cmd_x = float(
+            np.clip(
+                (self.servo_kp * error_x) + (self.servo_kd * deriv_x),
+                -self.max_servo_velocity,
+                self.max_servo_velocity,
+            )
+        )
+        cmd_y = float(
+            np.clip(
+                (self.servo_kp * error_y) + (self.servo_kd * deriv_y),
+                -self.max_servo_velocity,
+                self.max_servo_velocity,
+            )
+        )
+
+        self.prev_servo_error = (error_x, error_y)
+
+        # Map image-plane error to body-frame velocity commands.
+        vx_cmd = -cmd_y  # forward/back to correct vertical image error
+        vy_cmd = cmd_x  # lateral to correct horizontal image error
+        self.control.set_velocity_body(vx_cmd, vy_cmd, 0.0, 0.0)
+
+        converged = (
+            abs(pixel_dx) <= self.servo_tolerance_px
+            and abs(pixel_dy) <= self.servo_tolerance_px
+        )
+        timed_out = (time.time() - self.servo_start_time) >= self.servo_timeout_s
+        return converged, timed_out
 
     def _log_planned_path(self):
         """Run BFS/DFS planning on the discovered graph for current target."""
@@ -364,11 +443,24 @@ class Brain:
                 print("Mission complete: landed on all requested airports.")
                 break
 
-            self._apply_line_following(line)
-            self._log_planned_path()
+            if self.state == MissionState.FOLLOW_LINE:
+                self._apply_line_following(line)
+                self._log_planned_path()
 
-            if not self._handle_detected_tags(tags, frame):
-                break
+                if not self._handle_detected_tags(tags, frame):
+                    break
+
+            elif self.state == MissionState.VISUAL_SERVO:
+                converged, timed_out = self._servo_to_tag()
+                if converged and self.servo_target_tag is not None:
+                    if not self._land_wait_takeoff_cycle(self.servo_target_tag):
+                        break
+                    self.servo_target_tag = None
+                    self.servo_result = None
+                elif timed_out:
+                    print("Visual servoing timed out. Triggering failsafe landing.")
+                    self._failsafe_land()
+                    break
 
             time.sleep(0.05)
 
