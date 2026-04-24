@@ -1,0 +1,53 @@
+{
+  "mavlink": {
+    "connection": "udp:0.0.0.0:14550",
+    "heartbeat_timeout_s": 10.0,
+    "command_timeout_s": 30.0,
+    "max_altitude_m": 3.0
+  },
+  "camera": {
+    "host": "127.0.0.1",
+    "port": 8080,
+    "socket_timeout_s": 1.0,
+    "reconnect_delay_s": 1.0,
+    "max_queue_size": 2,
+    "channels": 3
+  },
+  "apriltag": {
+    "dictionary": "DICT_APRILTAG_36h11",
+    "roi_top_ratio": 0.15,
+    "roi_bottom_ratio": 0.95,
+    "min_perimeter_px": 50.0,
+    "target_tag_id": null
+  },
+  "line_follow": {
+    "hsv_lower": [18, 70, 70],
+    "hsv_upper": [40, 255, 255],
+    "roi_top_ratio": 0.2,
+    "roi_bottom_ratio": 0.55,
+    "adaptive_filtering": true,
+    "adaptive_min_value_floor": 45,
+    "adaptive_min_saturation_floor": 60,
+    "morph_kernel": 5,
+    "min_contour_area_px": 250.0,
+    "kp": 0.95,
+    "kd": 0.3,
+    "forward_speed_mps": 0.3,
+    "search_yaw_rate_rps": 0.25
+  },
+  "landing": {
+    "tag_center_tolerance_px": 70,
+    "stable_frames_required": 8,
+    "descent_rate_mps": 0.2,
+    "approach_speed_mps": 0.15,
+    "lateral_gain": 0.3,
+    "line_assist_gain": 0.2,
+    "max_lateral_speed_mps": 0.3
+  },
+  "mission": {
+    "target_altitude_m": 1.6,
+    "loop_hz": 15.0,
+    "mission_timeout_s": 300.0,
+    "mode": "GUIDED"
+  }
+}
