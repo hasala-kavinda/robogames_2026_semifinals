@@ -3,15 +3,14 @@
     "host": "127.0.0.1",
     "port": 8080
   },
-  "apriltag": {
-    "target_tag_id": 125
-  },
+  "apriltag": {},
   "line_follow": {
     "hsv_lower": [15, 55, 55],
     "hsv_upper": [45, 255, 255],
     "adaptive_filtering": true
   },
   "mission": {
+    "requested_countries": [1, 2],
     "target_altitude_m": 1.8,
     "mission_timeout_s": 360.0
   }

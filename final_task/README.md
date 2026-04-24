@@ -13,9 +13,14 @@ All runtime paths are relative so this directory can be moved into a new reposit
 
 ## Final Round Differences from Semi-final
 
-- AprilTags are now used directly along the path and for final landing alignment.
-- Landing logic now fuses AprilTag centering with yellow-line assist, instead of treating them as separate phases.
+- Core mission behavior is kept equivalent to the semi-final: AprilTag number decoding, country-based selection, and multi-airport progression.
+- The final-round change is that AprilTags are now on the same ground path as line following, so perception and landing timing are tuned for this placement.
 - Yellow path detection includes adaptive filtering to better handle real lighting variation, camera noise, and motion blur.
+
+AprilTag mission semantics:
+
+- Tag ID is decoded as `country-status-reachable` (for example `125` means country `1`, safe status `1`, reachable count `5`).
+- Landing decisions are based on decoded metadata plus the requested country sequence in `mission.requested_countries`.
 
 ## Target Platform
 
@@ -80,6 +85,9 @@ cp config/hardware.example.json config/local.json
 python3 -m src.mission --config config/local.json --debug
 ```
 
+If evaluators require a different order, set `mission.requested_countries` in the config override.
+Example: `[2, 1]` means complete country `2` first, then country `1`.
+
 ## 5. Start onboard mission
 
 ### Option A: Startup script (recommended)
@@ -88,10 +96,10 @@ python3 -m src.mission --config config/local.json --debug
 sh scripts/start.sh config/defaults.json
 ```
 
-With target tag override:
+With country order override:
 
 ```sh
-TARGET_TAG_ID=125 sh scripts/start.sh config/local.json
+COUNTRIES=1,2 sh scripts/start.sh config/local.json
 ```
 
 ### Option B: Run mission directly
@@ -110,19 +118,19 @@ Run these checks in order before live flight:
 python3 scripts/diagnostics.py
 ```
 
-2. Confirm MAVLink heartbeat and telemetry access:
+1. Confirm MAVLink heartbeat and telemetry access:
 
 ```sh
 python3 scripts/test_mavlink.py
 ```
 
-3. Preview camera and detection overlays (`q` to quit):
+1. Preview camera and detection overlays (`q` to quit):
 
 ```sh
 python3 scripts/camera_preview.py
 ```
 
-4. Run mission with conservative speeds first:
+1. Run mission with conservative speeds first:
 
 ```sh
 python3 -m src.mission --config config/local.json --debug

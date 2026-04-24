@@ -7,7 +7,7 @@ cd "$PROJECT_DIR"
 
 CONFIG_PATH="${1:-config/defaults.json}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TARGET_TAG_ID="${TARGET_TAG_ID:-}"
+COUNTRIES="${COUNTRIES:-}"
 
 if [ ! -d ".venv" ]; then
   echo "[start] Creating virtual environment"
@@ -22,8 +22,8 @@ python3 -m pip install --upgrade pip >/dev/null
 python3 -m pip install -r requirements.txt
 
 echo "[start] Launching mission with config: $CONFIG_PATH"
-if [ -n "$TARGET_TAG_ID" ]; then
-  python3 -m src.mission --config "$CONFIG_PATH" --target-tag-id "$TARGET_TAG_ID"
+if [ -n "$COUNTRIES" ]; then
+  python3 -m src.mission --config "$CONFIG_PATH" --countries "$COUNTRIES"
 else
   python3 -m src.mission --config "$CONFIG_PATH"
 fi

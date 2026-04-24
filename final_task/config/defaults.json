@@ -17,8 +17,7 @@
     "dictionary": "DICT_APRILTAG_36h11",
     "roi_top_ratio": 0.15,
     "roi_bottom_ratio": 0.95,
-    "min_perimeter_px": 50.0,
-    "target_tag_id": null
+    "min_perimeter_px": 50.0
   },
   "line_follow": {
     "hsv_lower": [18, 70, 70],
@@ -45,6 +44,7 @@
     "max_lateral_speed_mps": 0.3
   },
   "mission": {
+    "requested_countries": [1, 2],
     "target_altitude_m": 1.6,
     "loop_hz": 15.0,
     "mission_timeout_s": 300.0,
