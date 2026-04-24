@@ -1,0 +1,28 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# Tooling cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and runtime artifacts
+logs/
+*.log
+*.pid
+
+# Local overrides and temporary captures
+config/local.json
+captures/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
