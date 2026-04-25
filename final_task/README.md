@@ -27,7 +27,7 @@ AprilTag mission semantics:
 - Raspberry Pi 5
 - Alpine Linux
 - MAVLink endpoint on UDP port `14550`
-- Camera stream on TCP port `8080`
+- Camera stream on TCP port `9000` (raw RGB frames)
 
 ## 1. Connect over SSH
 
@@ -101,6 +101,9 @@ cp config/hardware.example.json config/local.json
 python3 -m src.mission --config config/local.json --debug
 ```
 
+If `config/local.json` is missing, mission startup now fails with a hint that
+includes the exact `cp` command above.
+
 If evaluators require a different order, set `mission.requested_countries` in the config override.
 Example: `[2, 1]` means complete country `2` first, then country `1`.
 
@@ -158,7 +161,7 @@ python3 -m src.mission --config config/local.json --debug
 ## Module overview
 
 - `src/mavlink_client.py`: connection to MAVLink, arm/takeoff/velocity/land commands
-- `src/camera_stream.py`: low-latency TCP frame ingestion from port 8080
+- `src/camera_stream.py`: low-latency TCP frame ingestion from port 9000
 - `src/apriltag_detector.py`: AprilTag detection tuned for ground path
 - `src/line_follower.py`: adaptive yellow-path detection and tracking error output
 - `src/landing_controller.py`: landing command fusion (tag alignment + line assist)
@@ -170,6 +173,14 @@ python3 -m src.mission --config config/local.json --debug
 - Vision operations use simple morphology and contour logic to limit CPU usage.
 - Avoid running extra GUI tools during flight unless needed for diagnostics.
 - Keep camera resolution moderate (for example 640x480) if CPU load is high.
+
+## Camera stream expectations and troubleshooting
+
+- The mission TCP camera client expects raw RGB frames at 640x480 by default.
+- If dimensions differ from the configured expected size, that frame is dropped
+  to prevent OpenCV crashes from malformed payloads.
+- If you intentionally use a different camera size, override
+  `camera.expected_width` and `camera.expected_height` in your local config.
 
 ## Portability notes
 

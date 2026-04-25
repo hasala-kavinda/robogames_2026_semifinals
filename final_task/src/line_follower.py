@@ -30,6 +30,9 @@ class YellowLineFollower:
 
     def detect(self, frame_bgr: np.ndarray) -> LineResult:
         """Return normalized lateral error in [-1, 1] and detection confidence."""
+        if frame_bgr is None or frame_bgr.ndim != 3 or frame_bgr.size == 0:
+            return LineResult(False, 0.0, 0.0, 0, (0, 0))
+
         height, width = frame_bgr.shape[:2]
         top = int(height * float(self._cfg.get("roi_top_ratio", 0.2)))
         bottom = int(height * float(self._cfg.get("roi_bottom_ratio", 0.55)))

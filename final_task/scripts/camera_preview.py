@@ -38,7 +38,7 @@ def main() -> None:
     try:
         while True:
             frame = camera.get_latest_frame(timeout_s=0.2)
-            if frame is None:
+            if frame is None or frame.ndim != 3 or frame.size == 0:
                 continue
 
             line_result = line.detect(frame)
@@ -83,10 +83,7 @@ def main() -> None:
             fps = frames / max(time.time() - started, 1e-6)
             cv2.putText(
                 frame,
-                (
-                    f"fps={fps:.1f} line={line_result.visible} "
-                    f"tags={len(detections)}"
-                ),
+                (f"fps={fps:.1f} line={line_result.visible} tags={len(detections)}"),
                 (8, 20),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,

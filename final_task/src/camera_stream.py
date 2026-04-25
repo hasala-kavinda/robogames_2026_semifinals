@@ -22,6 +22,8 @@ class CameraStream:
         self.socket_timeout_s = float(config.get("socket_timeout_s", 1.0))
         self.reconnect_delay_s = float(config.get("reconnect_delay_s", 1.0))
         self.channels = int(config.get("channels", 3))
+        self.expected_width = int(config.get("expected_width", 640))
+        self.expected_height = int(config.get("expected_height", 480))
         self._queue: queue.Queue[np.ndarray] = queue.Queue(
             maxsize=int(config.get("max_queue_size", 2))
         )
@@ -59,9 +61,11 @@ class CameraStream:
                     sock.connect((self.host, self.port))
                     print(f"[camera] Connected to {self.host}:{self.port}")
                     while not self._stop_event.is_set():
-                        frame = self._read_frame(sock)
-                        if frame is None:
+                        frame, stream_open = self._read_frame(sock)
+                        if not stream_open:
                             break
+                        if frame is None:
+                            continue
                         # Drop stale samples under load so controller always sees latest scene.
                         while self._queue.full():
                             try:
@@ -75,23 +79,48 @@ class CameraStream:
             if not self._stop_event.is_set():
                 time.sleep(self.reconnect_delay_s)
 
-    def _read_frame(self, sock: socket.socket) -> Optional[np.ndarray]:
+    def _read_frame(self, sock: socket.socket) -> tuple[Optional[np.ndarray], bool]:
         # Header format is width+height as unsigned short each.
         header = self._recv_exact(sock, 4)
         if header is None:
-            return None
+            return None, False
 
         width, height = struct.unpack("=HH", header)
+        if width != self.expected_width or height != self.expected_height:
+            print(
+                f"[camera] Dropping frame with unexpected size "
+                f"{width}x{height} (expected {self.expected_width}x{self.expected_height})"
+            )
+            return None, True
+
         payload_len = width * height * self.channels
         payload = self._recv_exact(sock, payload_len)
         if payload is None:
-            return None
+            return None, False
 
-        frame_rgb = np.frombuffer(payload, dtype=np.uint8).reshape(
-            (height, width, self.channels)
-        )
+        if len(payload) != payload_len:
+            print(
+                f"[camera] Dropping frame with short payload "
+                f"{len(payload)}B (expected {payload_len}B)"
+            )
+            return None, True
+
+        try:
+            frame_rgb = np.frombuffer(payload, dtype=np.uint8).reshape(
+                (height, width, self.channels)
+            )
+        except ValueError as exc:
+            print(f"[camera] Dropping frame with invalid payload shape: {exc}")
+            return None, True
+
         # Convert to BGR because OpenCV processing and display expect BGR by default.
-        return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        try:
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        except cv2.error as exc:
+            print(f"[camera] Dropping frame due to cvtColor failure: {exc}")
+            return None, True
+
+        return frame_bgr, True
 
     def _recv_exact(self, sock: socket.socket, num_bytes: int) -> Optional[bytes]:
         data = bytearray()
