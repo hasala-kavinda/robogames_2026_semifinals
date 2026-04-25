@@ -6,8 +6,8 @@
     "max_altitude_m": 3.0
   },
   "camera": {
-    "host": "127.0.0.1",
-    "port": 8080,
+    "host": "192.168.1.60",
+    "port": 9000,
     "socket_timeout_s": 1.0,
     "reconnect_delay_s": 1.0,
     "max_queue_size": 2,
