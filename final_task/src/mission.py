@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 from collections import deque
 from enum import Enum
+from pathlib import Path
 import time
 from typing import Dict, List, Optional, Set, Tuple
 
 from .apriltag_detector import AprilTagDetector, TagDetection
 from .camera_stream import CameraStream
-from .config_loader import load_config
+from .config_loader import PROJECT_ROOT, ConfigError, load_config
 from .line_follower import LineResult, YellowLineFollower
 from .mavlink_client import MavlinkClient
 
@@ -47,9 +48,7 @@ class MissionRunner:
         self.kd = float(config["line_follow"].get("kd", 0.30))
         self.prev_error = 0.0
         self.filtered_error = 0.0
-        self.target_speed = float(
-            config["line_follow"].get("forward_speed_mps", 0.30)
-        )
+        self.target_speed = float(config["line_follow"].get("forward_speed_mps", 0.30))
         self.search_yaw_rate = float(
             config["line_follow"].get("search_yaw_rate_rps", 0.25)
         )
@@ -302,9 +301,7 @@ class MissionRunner:
 
     def _apply_line_following(self, line: LineResult):
         if line.visible:
-            self.filtered_error = (
-                (0.7 * self.filtered_error) + (0.3 * line.error)
-            )
+            self.filtered_error = (0.7 * self.filtered_error) + (0.3 * line.error)
             derivative = self.filtered_error - self.prev_error
             yaw_rate = (self.filtered_error * self.kp) + (derivative * self.kd)
             yaw_rate = max(min(yaw_rate, 1.2), -1.2)
@@ -353,10 +350,7 @@ class MissionRunner:
                 )
             return
 
-        print(
-            f"Targeting airport tag {tag.tag_id} for country "
-            f"{tag.country_code}."
-        )
+        print(f"Targeting airport tag {tag.tag_id} for country {tag.country_code}.")
         self.last_skip_log_key = None
         self.servo_target_tag = tag
         self.servo_start_time = time.time()
@@ -428,11 +422,7 @@ class MissionRunner:
         tag: Optional[TagDetection] = None
         if self.expected_next_airport is not None:
             tag = next(
-                (
-                    item
-                    for item in tags
-                    if item.tag_id == self.expected_next_airport
-                ),
+                (item for item in tags if item.tag_id == self.expected_next_airport),
                 None,
             )
             if tag is None:
@@ -452,12 +442,8 @@ class MissionRunner:
             self.mavlink.send_velocity_body(0.0, 0.0, 0.0, 0.0)
             return False, False
 
-        error_x = (
-            matching.center[0] - (frame_width / 2.0)
-        ) / (frame_width / 2.0)
-        error_y = (
-            matching.center[1] - (frame_height / 2.0)
-        ) / (frame_height / 2.0)
+        error_x = (matching.center[0] - (frame_width / 2.0)) / (frame_width / 2.0)
+        error_y = (matching.center[1] - (frame_height / 2.0)) / (frame_height / 2.0)
 
         deriv_x = error_x - self.prev_servo_error[0]
         deriv_y = error_y - self.prev_servo_error[1]
@@ -486,9 +472,7 @@ class MissionRunner:
             abs(pixel_dx) <= self.servo_tolerance_px
             and abs(pixel_dy) <= self.servo_tolerance_px
         )
-        timed_out = (
-            time.time() - self.servo_start_time
-        ) >= self.servo_timeout_s
+        timed_out = (time.time() - self.servo_start_time) >= self.servo_timeout_s
         return converged, timed_out
 
     def _frame_loop_step(self, frame):
@@ -509,11 +493,7 @@ class MissionRunner:
         matching = None
         if self.servo_target_tag is not None:
             matching = next(
-                (
-                    tag
-                    for tag in tags
-                    if tag.tag_id == self.servo_target_tag.tag_id
-                ),
+                (tag for tag in tags if tag.tag_id == self.servo_target_tag.tag_id),
                 None,
             )
 
@@ -628,9 +608,7 @@ class MissionRunner:
 
         loop_hz = float(self.config["mission"].get("loop_hz", 15.0))
         dt_target = 1.0 / max(loop_hz, 1.0)
-        target_altitude = float(
-            self.config["mission"].get("target_altitude_m", 1.6)
-        )
+        target_altitude = float(self.config["mission"].get("target_altitude_m", 1.6))
         mode = str(self.config["mission"].get("mode", "GUIDED"))
 
         self.camera.start()
@@ -680,14 +658,27 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
+    override_path = Path(args.config)
+    if not override_path.is_absolute():
+        override_path = (PROJECT_ROOT / override_path).resolve()
+
+    if not override_path.exists():
+        hint = ""
+        if override_path == (PROJECT_ROOT / "config" / "local.json").resolve():
+            hint = (
+                " (create it with: cp config/hardware.example.json config/local.json)"
+            )
+        raise SystemExit(f"Config file not found: {override_path}{hint}")
+
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        raise SystemExit(str(exc)) from exc
 
     if args.countries:
         target_countries = _parse_countries(args.countries)
     else:
-        target_countries = list(
-            config["mission"].get("requested_countries", [1, 2])
-        )
+        target_countries = list(config["mission"].get("requested_countries", [1, 2]))
 
     runner = MissionRunner(
         config,

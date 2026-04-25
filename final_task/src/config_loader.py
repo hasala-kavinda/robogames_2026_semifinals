@@ -45,7 +45,12 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         with override_path.open("r", encoding="utf-8") as handle:
             override = json.load(handle)
     except FileNotFoundError as exc:
-        raise ConfigError(f"Override config not found: {override_path}") from exc
+        hint = ""
+        if override_path == (PROJECT_ROOT / "config" / "local.json").resolve():
+            hint = (
+                " (create it with: cp config/hardware.example.json config/local.json)"
+            )
+        raise ConfigError(f"Override config not found: {override_path}{hint}") from exc
 
     if not isinstance(override, dict):
         raise ConfigError("Override config must be a JSON object")

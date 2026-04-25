@@ -41,9 +41,7 @@ class AprilTagDetector:
         else:
             self._detector = None
             if self._legacy_detect_markers is None:
-                raise RuntimeError(
-                    "OpenCV ArUco detectMarkers API is unavailable"
-                )
+                raise RuntimeError("OpenCV ArUco detectMarkers API is unavailable")
 
     @staticmethod
     def decode_airport_metadata(tag_id: int) -> Optional[Dict[str, int]]:
@@ -69,12 +67,23 @@ class AprilTagDetector:
         Return filtered detections from the region where ground tags are
         expected.
         """
+        if frame_bgr is None or frame_bgr.ndim != 3 or frame_bgr.size == 0:
+            return []
+
         height = frame_bgr.shape[0]
         top = int(height * float(self._cfg.get("roi_top_ratio", 0.15)))
         bottom = int(height * float(self._cfg.get("roi_bottom_ratio", 0.95)))
+        if bottom <= top:
+            return []
 
         roi = frame_bgr[top:bottom, :]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        if roi.size == 0 or roi.ndim != 3:
+            return []
+
+        try:
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        except cv2.error:
+            return []
 
         if self._use_aruco_detector and self._detector is not None:
             corners, ids, _ = self._detector.detectMarkers(gray)

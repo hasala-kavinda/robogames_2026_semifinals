@@ -1,17 +1,19 @@
 {
   "mavlink": {
-    "connection": "udp:0.0.0.0:14550",
+    "connection": "udp:192.168.1.71:14550",
     "heartbeat_timeout_s": 10.0,
     "command_timeout_s": 30.0,
     "max_altitude_m": 3.0
   },
   "camera": {
-    "host": "192.168.1.60",
+    "host": "192.168.1.71",
     "port": 9000,
     "socket_timeout_s": 1.0,
     "reconnect_delay_s": 1.0,
     "max_queue_size": 2,
-    "channels": 3
+    "channels": 3,
+    "expected_width": 640,
+    "expected_height": 480
   },
   "apriltag": {
     "dictionary": "DICT_APRILTAG_36h11",
@@ -45,7 +47,7 @@
   },
   "mission": {
     "requested_countries": [1, 2],
-    "target_altitude_m": 1.6,
+    "target_altitude_m": 0.8,
     "loop_hz": 15.0,
     "mission_timeout_s": 300.0,
     "mode": "GUIDED"
