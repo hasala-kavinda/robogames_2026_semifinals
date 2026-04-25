@@ -22,7 +22,9 @@ class CameraStream:
         self.socket_timeout_s = float(config.get("socket_timeout_s", 1.0))
         self.reconnect_delay_s = float(config.get("reconnect_delay_s", 1.0))
         self.channels = int(config.get("channels", 3))
-        self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=int(config.get("max_queue_size", 2)))
+        self._queue: queue.Queue[np.ndarray] = queue.Queue(
+            maxsize=int(config.get("max_queue_size", 2))
+        )
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
@@ -35,11 +37,10 @@ class CameraStream:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop camera thread and release UI resources if any were used."""
+        """Stop camera thread."""
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
-        cv2.destroyAllWindows()
 
     def get_latest_frame(self, timeout_s: float = 0.0) -> Optional[np.ndarray]:
         """Return the latest frame; old frames are dropped to preserve control latency."""
@@ -86,7 +87,9 @@ class CameraStream:
         if payload is None:
             return None
 
-        frame_rgb = np.frombuffer(payload, dtype=np.uint8).reshape((height, width, self.channels))
+        frame_rgb = np.frombuffer(payload, dtype=np.uint8).reshape(
+            (height, width, self.channels)
+        )
         # Convert to BGR because OpenCV processing and display expect BGR by default.
         return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
 

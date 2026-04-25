@@ -68,6 +68,22 @@ python3 -m pip install --upgrade pip
 python3 -m pip install -r requirements.txt
 ```
 
+For SSH/headless operation on Raspberry Pi, this project uses
+`opencv-contrib-python-headless` by default, so GUI/X11 libraries are not
+required for mission runtime.
+
+If you previously installed GUI OpenCV wheels, clean them first to avoid mixed
+wheel conflicts such as `ImportError: libxcb.so.1`:
+
+```sh
+python3 -m pip uninstall -y \
+  opencv-python \
+  opencv-contrib-python \
+  opencv-python-headless \
+  opencv-contrib-python-headless
+python3 -m pip install -r requirements.txt
+```
+
 ## 4. Configure mission parameters for real hardware
 
 Default config lives at `config/defaults.json`.
@@ -129,6 +145,9 @@ python3 scripts/test_mavlink.py
 ```sh
 python3 scripts/camera_preview.py
 ```
+
+Note: preview is optional and requires a GUI session. For pure SSH mission
+execution, skip this step.
 
 1. Run mission with conservative speeds first:
 
